@@ -257,6 +257,10 @@ def build(demo: bool) -> str:
     p.append("</ul><div class='mute'>ตลาด = SPY · กลุ่ม = ETF/peer เหนือกว่า SPY · ตัวเอง = หุ้นเหนือกว่า peer "
              "(สะท้อนข่าว/งบของบริษัท)</div></div>")
 
+    # กราฟช่วงเวลาซื้อ/ขายใน 1 วัน (จากแท่ง 1 นาที)
+    from volume_profile import section_html
+    p.append(section_html(sorted(s["ticker"].unique())))
+
     # สมมติฐาน
     p.append("<h2>สมมติฐาน</h2><div class='tbl'><table><tr><th class='l'>สมมติฐาน</th><th>n</th>"
              "<th>ถูก</th><th>ผลเฉลี่ย 5 วัน</th><th class='l'>สถานะ</th></tr>")

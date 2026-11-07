@@ -1,0 +1,194 @@
+#!/usr/bin/env python3
+"""
+กราฟ "ช่วงเวลาไหนซื้อ/ขายเยอะ" ใน 1 วัน จากแท่ง 1 นาทีใน data/intraday/
+- แบ่งวันเป็นช่วงละ 5 นาที (08:00–16:30 เวลา New York) แสดงเป็นเวลาไทย
+- ปริมาณ "ฝั่งซื้อ" (ประมาณ) = volume ของแท่งที่ปิดสูงกว่าเปิด / "ฝั่งขาย" = แท่งที่ปิดต่ำกว่าเปิด
+  แท่งที่ปิดเท่าเปิดแบ่งครึ่ง (Yahoo ไม่บอกฝั่งของแต่ละรายการจริง จึงเป็นค่าประมาณ)
+- หน่วย = % ของ volume ทั้งวัน (ช่วง 08:00–16:30) เพื่อเทียบข้ามวัน/ข้ามหุ้นได้
+ใช้: from volume_profile import section_html
+"""
+from __future__ import annotations
+
+import json
+from datetime import datetime, time
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+import pandas as pd
+
+ROOT = Path(__file__).resolve().parent
+INTRA = ROOT / "data" / "intraday"
+ET = ZoneInfo("America/New_York")
+BKK = ZoneInfo("Asia/Bangkok")
+START, END, STEP = time(8, 0), time(16, 30), 5     # ช่วงเวลา ET และขนาดช่อง (นาที)
+MAX_DAYS = 20                                      # ใช้ย้อนหลังกี่วันทำการ
+
+
+def _slots() -> list[time]:
+    out, m = [], START.hour * 60 + START.minute
+    while m < END.hour * 60 + END.minute:
+        out.append(time(m // 60, m % 60))
+        m += STEP
+    return out
+
+
+def _day_profile(f: Path) -> dict | None:
+    df = pd.read_csv(f, index_col=0)
+    if df.empty or "Volume" not in df:
+        return None
+    idx = pd.to_datetime(df.index, utc=True).tz_convert(ET)
+    df.index = idx
+    t = idx.time
+    df = df[(t >= START) & (t < END)]
+    if df.empty or df["Volume"].sum() <= 0:
+        return None
+    up = (df["Close"] > df["Open"]).astype(float) + (df["Close"] == df["Open"]).astype(float) * 0.5
+    slot = df.index.floor(f"{STEP}min").time
+    g = pd.DataFrame({"slot": slot, "buy": df["Volume"] * up, "sell": df["Volume"] * (1 - up)}).groupby("slot").sum()
+    tot = float(df["Volume"].sum())
+    slots = _slots()
+    buy = [round(float(g["buy"].get(s, 0)) / tot * 100, 3) for s in slots]
+    sell = [round(float(g["sell"].get(s, 0)) / tot * 100, 3) for s in slots]
+    return {"buy": buy, "sell": sell, "vol": int(tot)}
+
+
+def build_data(tickers: list[str]) -> dict:
+    days = sorted(p.name for p in INTRA.iterdir() if p.is_dir())[-MAX_DAYS:] if INTRA.exists() else []
+    out = {}
+    for tk in tickers:
+        per = {}
+        for d in days:
+            f = INTRA / d / f"{tk}.csv"
+            if f.exists():
+                prof = _day_profile(f)
+                if prof:
+                    per[d] = prof
+        if not per:
+            continue
+        n = len(per)
+        avg = {k: [round(sum(p[k][i] for p in per.values()) / n, 3) for i in range(len(_slots()))]
+               for k in ("buy", "sell")}
+        out[tk] = {"avg": avg, "days": per, "n": n}
+    return out
+
+
+def _thai_labels() -> list[str]:
+    """แปลงเวลา ET เป็นเวลาไทย ตามช่วงเวลาปัจจุบัน (สหรัฐฯ ฤดูร้อน +11 ชม. / ฤดูหนาว +12 ชม.)"""
+    today = datetime.now(ET).date()
+    return [datetime.combine(today, s, tzinfo=ET).astimezone(BKK).strftime("%H:%M") for s in _slots()]
+
+
+def _peaks(d: dict) -> str:
+    """สรุปเป็นตัวหนังสือ: 3 ช่วงที่ volume สูงสุด + ช่วงที่ซื้อ/ขายเด่นสุด (จากค่าเฉลี่ย)"""
+    lab = _thai_labels()
+    buy, sell = d["avg"]["buy"], d["avg"]["sell"]
+    tot = [b + s for b, s in zip(buy, sell)]
+    top = sorted(range(len(tot)), key=lambda i: -tot[i])[:3]
+    reg = [i for i, s in enumerate(_slots()) if time(9, 30) <= s < time(16, 0)]
+    net = {i: buy[i] - sell[i] for i in reg}
+    nb, ns = max(net, key=net.get), min(net, key=net.get)
+    tops = ", ".join(f"{lab[i]} ({tot[i]:.1f}%)" for i in sorted(top))
+    return (f"ช่วงที่ซื้อขายเยอะสุด (เวลาไทย): {tops} · ช่วงตลาดเปิดที่ซื้อสุทธิเด่นสุด {lab[nb]} (+{net[nb]:.2f}%) · "
+            f"ขายสุทธิเด่นสุด {lab[ns]} ({net[ns]:.2f}%)")
+
+
+CSS = """
+.vp{--buy:#2a78d6;--sell:#eb6834;--grid:#e4e2dd;--axis:#6e6e73}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .vp{--buy:#3987e5;--sell:#d95926;--grid:#2e2e33;--axis:#9a9aa0}}
+:root[data-theme="dark"] .vp{--buy:#3987e5;--sell:#d95926;--grid:#2e2e33;--axis:#9a9aa0}
+.vp .ctl{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:0 0 10px}
+.vp select{font:inherit;padding:4px 8px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--ink)}
+.vp .sw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:-1px}
+.vp .ch{margin:0 0 14px}.vp .ch h3{font-size:15px;margin:0 0 2px}.vp svg{width:100%;height:auto;display:block}
+.vp .tip{position:fixed;pointer-events:none;background:var(--card);border:1px solid var(--line);border-radius:8px;
+padding:6px 9px;font-size:12.5px;box-shadow:0 4px 14px rgba(0,0,0,.12);display:none;z-index:9;white-space:nowrap}
+.vp details{margin-top:6px}.vp details table{font-size:12.5px}
+"""
+
+JS = r"""
+(function(){
+const D = JSON.parse(document.getElementById('vp-data').textContent);
+const sel = document.getElementById('vp-day'), tip = document.getElementById('vp-tip');
+const W=720,H=190,L=34,R=8,T=10,B=24, mid=T+(H-T-B)/2;
+const N=D.labels.length, bw=(W-L-R)/N;
+function series(tk,key){const t=D.t[tk]; if(!t) return null; return key==='avg'?t.avg:(t.days[key]||null);}
+function maxv(key){let m=0;for(const tk in D.t){const s=series(tk,key);if(!s)continue;
+  s.buy.forEach((v,i)=>{m=Math.max(m,v,s.sell[i])});}
+  const st=[0.5,1,2,2.5,5,10,15,20,25,50]; for(const x of st){ if(m<=x*2) return x*2; } return Math.ceil(m/10)*10;}
+function draw(){
+  const key=sel.value, m=maxv(key), sc=(H-T-B)/2/m;
+  for(const tk in D.t){
+    const box=document.getElementById('vp-'+tk), s=series(tk,key);
+    if(!s){box.innerHTML='<div class="mute">ไม่มีข้อมูลวันนี้</div>';continue;}
+    let g='';
+    [m,m/2].forEach(v=>{const y1=mid-v*sc,y2=mid+v*sc;
+      g+=`<line x1="${L}" x2="${W-R}" y1="${y1}" y2="${y1}" stroke="var(--grid)"/><line x1="${L}" x2="${W-R}" y1="${y2}" y2="${y2}" stroke="var(--grid)"/>`+
+         `<text x="${L-4}" y="${y1+4}" text-anchor="end" font-size="10" fill="var(--axis)">${v}%</text>`+
+         `<text x="${L-4}" y="${y2+4}" text-anchor="end" font-size="10" fill="var(--axis)">${v}%</text>`;});
+    // ช่วงตลาดเปิด 09:30–16:00 ET
+    const o=D.open_i, c=D.close_i;
+    g+=`<rect x="${L+o*bw}" y="${T}" width="${(c-o)*bw}" height="${H-T-B}" fill="var(--grid)" opacity=".35"/>`;
+    s.buy.forEach((v,i)=>{const x=L+i*bw+1, w=Math.max(1,bw-2);
+      if(v>0) g+=`<rect x="${x}" y="${mid-1-v*sc}" width="${w}" height="${v*sc}" rx="1.5" fill="var(--buy)"/>`;
+      const u=s.sell[i]; if(u>0) g+=`<rect x="${x}" y="${mid+1}" width="${w}" height="${u*sc}" rx="1.5" fill="var(--sell)"/>`;});
+    g+=`<line x1="${L}" x2="${W-R}" y1="${mid}" y2="${mid}" stroke="var(--axis)" stroke-width="1"/>`;
+    D.labels.forEach((lb,i)=>{ if(i%6===0) g+=`<text x="${L+i*bw}" y="${H-6}" font-size="10" fill="var(--axis)">${lb}</text>`;});
+    g+=`<text x="${L+o*bw+3}" y="${T+11}" font-size="10" fill="var(--axis)">ตลาดเปิด</text>`;
+    D.labels.forEach((lb,i)=>{g+=`<rect class="hit" data-i="${i}" x="${L+i*bw}" y="${T}" width="${bw}" height="${H-T-B}" fill="transparent"/>`;});
+    box.innerHTML=`<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${tk} ปริมาณซื้อขายตามช่วงเวลา">${g}</svg>`;
+    box.querySelectorAll('.hit').forEach(r=>{
+      r.addEventListener('mousemove',e=>{const i=+r.dataset.i, b=s.buy[i], u=s.sell[i];
+        tip.innerHTML=`<b>${tk}</b> ${D.labels[i]} น. (ไทย) · ${D.et[i]} ET<br>`+
+          `<span class="sw" style="background:var(--buy)"></span>ซื้อ ${b.toFixed(2)}%<br>`+
+          `<span class="sw" style="background:var(--sell)"></span>ขาย ${u.toFixed(2)}%<br>`+
+          `รวม ${(b+u).toFixed(2)}% · สุทธิ ${(b-u>=0?'+':'')}${(b-u).toFixed(2)}%`;
+        tip.style.display='block'; tip.style.left=Math.min(e.clientX+12,innerWidth-200)+'px'; tip.style.top=(e.clientY+12)+'px';
+        r.setAttribute('fill','rgba(127,127,127,.15)');});
+      r.addEventListener('mouseleave',()=>{tip.style.display='none'; r.setAttribute('fill','transparent');});
+    });
+  }
+}
+sel.addEventListener('change',draw); draw();
+})();
+"""
+
+
+def section_html(tickers: list[str]) -> str:
+    data = build_data(tickers)
+    if not data:
+        return ""
+    slots, labels = _slots(), _thai_labels()
+    all_days = sorted({d for t in data.values() for d in t["days"]}, reverse=True)
+    n = max(t["n"] for t in data.values())
+    payload = {"t": data, "labels": labels, "et": [s.strftime("%H:%M") for s in slots],
+               "open_i": slots.index(time(9, 30)), "close_i": slots.index(time(16, 0))}
+    opts = f"<option value='avg'>เฉลี่ย {n} วันล่าสุด</option>" + "".join(
+        f"<option value='{d}'>{d}</option>" for d in all_days)
+    offset = "+12" if labels[slots.index(time(9, 30))] == "21:30" else "+11"
+    charts = "".join(
+        f"<div class='ch'><h3>{tk} <span class='mute'>· n={data[tk]['n']} วัน</span></h3>"
+        f"<div id='vp-{tk}'></div><div class='mute'>เฉลี่ย {data[tk]['n']} วัน — {_peaks(data[tk])}</div></div>"
+        for tk in data)
+    # ตารางสำรอง (เข้าถึงได้โดยไม่ต้องดูสี): ค่าเฉลี่ยรายชั่วโมง
+    hours = sorted({s.hour for s in slots})
+    rows = "".join(
+        f"<tr><td class='l'>{tk}</td>" + "".join(
+            f"<td>{sum(d['avg']['buy'][i] for i, s in enumerate(slots) if s.hour == h):.1f} / "
+            f"{sum(d['avg']['sell'][i] for i, s in enumerate(slots) if s.hour == h):.1f}</td>" for h in hours) + "</tr>"
+        for tk, d in data.items())
+    head = "".join(f"<th>{labels[[s.hour for s in slots].index(h)][:2]}:xx</th>" for h in hours)
+    return (
+        f"<style>{CSS}</style>"
+        "<h2>ช่วงเวลาไหนซื้อ/ขายเยอะใน 1 วัน</h2><div class='card vp'>"
+        "<div class='ctl'><label>ดู: <select id='vp-day'>" + opts + "</select></label>"
+        "<span><i class='sw' style='background:var(--buy)'></i>ฝั่งซื้อ (เหนือเส้น)</span>"
+        "<span><i class='sw' style='background:var(--sell)'></i>ฝั่งขาย (ใต้เส้น)</span></div>"
+        + charts +
+        f"<div class='mute'>แกนนอน = เวลาไทย (ET {offset} ชม. ตามฤดูกาลปัจจุบัน) ช่องละ {STEP} นาที · แกนตั้ง = % ของ volume ทั้งวัน "
+        "(08:00–16:30 ET) ทุกหุ้นใช้สเกลเดียวกัน · พื้นเทา = ช่วงตลาดเปิด · "
+        "ฝั่งซื้อ/ขายเป็น<b>ค่าประมาณ</b>: volume ของแท่ง 1 นาทีที่ปิดสูงกว่าเปิด = ซื้อ, ต่ำกว่า = ขาย</div>"
+        f"<details><summary class='mute'>ตารางรายชั่วโมง (ซื้อ / ขาย %, เฉลี่ย)</summary><div class='tbl'><table>"
+        f"<tr><th class='l'>หุ้น</th>{head}</tr>{rows}</table></div></details>"
+        "<div class='tip' id='vp-tip'></div></div>"
+        f"<script type='application/json' id='vp-data'>{json.dumps(payload, separators=(',', ':'))}</script>"
+        f"<script>{JS}</script>")
