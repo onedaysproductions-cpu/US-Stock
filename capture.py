@@ -143,12 +143,18 @@ def day_change(d: pd.DataFrame, day) -> float | None:
     return round((float(row["Close"].iloc[-1]) / pc - 1) * 100, 2)
 
 
+_EARN_TIMES: dict = {}   # sym -> {date: "HH:MM" (ET)} ใช้ตอน save_earnings
+
+
 def earnings_dates(sym: str) -> list:
+    """วันประกาศงบ (ET) และเก็บเวลาไว้ใช้แยก BMO/AMC"""
     try:
         ed = yf.Ticker(sym).get_earnings_dates(limit=28)   # ~5 ปีย้อนหลัง + ไตรมาสข้างหน้า
         if ed is None or ed.empty:
             return []
-        return sorted({ts.tz_convert(ET).date() for ts in ed.index})
+        ts = [t.tz_convert(ET) for t in ed.index]
+        _EARN_TIMES[sym] = {t.date(): t.strftime("%H:%M") for t in ts}
+        return sorted({t.date() for t in ts})
     except Exception:  # noqa: BLE001
         return []
 
@@ -244,6 +250,8 @@ def load_summary() -> pd.DataFrame:
         return pd.DataFrame()
     df = pd.read_csv(SUMMARY, dtype=TEXT_COLS)
     df["notes"] = df["notes"].fillna("") if "notes" in df else ""
+    if "sell_waves" in df:
+        df["sell_waves"] = pd.to_numeric(df["sell_waves"], errors="coerce").round().astype("Int64")
     return apply_notes(df)
 
 
@@ -261,9 +269,19 @@ def apply_notes(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def save_earnings(sym: str, dates: list) -> None:
-    old = pd.read_csv(EARNINGS, dtype=str) if EARNINGS.exists() else pd.DataFrame(columns=["date", "ticker"])
-    new = pd.DataFrame({"date": [d.isoformat() for d in dates], "ticker": sym})
-    pd.concat([old, new]).drop_duplicates().sort_values(["date", "ticker"]).to_csv(EARNINGS, index=False)
+    """earnings.csv: date,ticker,time_et,timing (BMO ก่อนเปิด / AMC หลังปิด / DURING / UNKNOWN)"""
+    from enrich import timing_of
+    cols = ["date", "ticker", "time_et", "timing"]
+    old = pd.read_csv(EARNINGS, dtype=str).fillna("") if EARNINGS.exists() else pd.DataFrame(columns=cols)
+    for col in cols:
+        if col not in old:
+            old[col] = ""
+    times = _EARN_TIMES.get(sym, {})
+    new = pd.DataFrame({"date": [d.isoformat() for d in dates], "ticker": sym,
+                        "time_et": [times.get(d, "") for d in dates]})
+    new["timing"] = [timing_of(t) for t in new["time_et"]]
+    (pd.concat([old[cols], new]).drop_duplicates(["date", "ticker"], keep="last")
+       .sort_values(["date", "ticker"]).to_csv(EARNINGS, index=False))
 
 
 def summarize(sym: str, peer: str, intra: pd.DataFrame, d: pd.DataFrame,
@@ -294,8 +312,9 @@ def summarize(sym: str, peer: str, intra: pd.DataFrame, d: pd.DataFrame,
     chg = (c / pc - 1) * 100
     peer_chg, spy_chg = day_change(peer_d, day), day_change(spy_d, day)
     next_e = next((e for e in earn if e >= day), None)
+    from enrich import segments   # ret_first30 / ret_mid / ret_last60 / vol_share_*
 
-    return {"source": "live_1m", **decompose(chg, peer_chg, spy_chg),
+    return {"source": "live_1m", **decompose(chg, peer_chg, spy_chg), **segments(reg, o, c),
         "date": day.isoformat(), "ticker": sym, "peer": peer,
         "prev_close": round(pc, 4),
         "pre_last": round(float(pre["Close"].iloc[-1]), 4) if not pre.empty else None,
@@ -414,7 +433,8 @@ def main() -> None:
         print(f"upgrade to live_1m: {len(replaced)} rows")
     summary = pd.concat([old, pd.DataFrame(rows)], ignore_index=True) if rows else old
     if not summary.empty:
-        summary = tag_events(fill_followups(summary, dailies)).sort_values(["date", "ticker"])
+        from enrich import enrich   # ATR, gap_atr, label, QUIET, beta/R², งบ BMO/AMC, ช่วงเวลาในวัน
+        summary = enrich(tag_events(fill_followups(summary, dailies)))
         summary.to_csv(SUMMARY, index=False)
     print(f"summary: +{len(rows)} rows")
 

@@ -21,29 +21,16 @@ ET = ZoneInfo("America/New_York")
 BKK = ZoneInfo("Asia/Bangkok")
 MIN_N = 10   # ตัวอย่างขั้นต่ำก่อนจะเรียกว่า "เริ่มเห็นแนวโน้ม"
 
-# ---------- สมมติฐาน (ดูคำอธิบายใน hypotheses.md) ----------
-# filter = เงื่อนไขเลือกแถว (pandas query), success = เงื่อนไขที่ถือว่า "สมมติฐานถูก"
-HYPOTHESES = [
-    {"id": "H1", "name": "Gap ขึ้น 3–5% แล้วโดนขายเป็นรอบ = เทรดสั้น",
-     "filter": "gap_pct >= 3 and gap_pct <= 5 and sell_waves >= 3",
-     "success": lambda d: d["ret_5d"] < 0, "outcome": "ret_5d",
-     "meaning": "ราคาใน 5 วันถัดไปต่ำกว่าวันนั้น"},
-    {"id": "H2", "name": "Gap ขึ้นแล้วปิดเหนือ VWAP = มีแรงซื้อต่อเนื่อง",
-     "filter": "gap_pct >= 2 and close_vs_vwap_pct > 0",
-     "success": lambda d: d["ret_5d"] > 0, "outcome": "ret_5d",
-     "meaning": "ราคาใน 5 วันถัดไปสูงกว่าวันนั้น"},
-    {"id": "H3", "name": "วัน CPI/FOMC หุ้นขยับตามตลาดมากกว่าตามตัวเอง",
-     "filter": "events.str.contains('CPI|FOMC', na=False)",
-     "success": lambda d: d["driver"] == "MARKET", "outcome": None,
-     "meaning": "ส่วนที่มาจากตลาด (SPY) ใหญ่ที่สุด"},
-]
+# ---------- สมมติฐาน: อยู่ใน analysis.py (HYPOTHESES) ----------
+from analysis import (GROUP_TH, HYPOTHESES, hypothesis_results, label_stats, linkage,  # noqa: E402,F401
+                      linkage_text, post_earnings, trades_vs_market)
 
 LABEL_TH = {
     "GAP_UP_GO": "Gap ขึ้น → ไปต่อ", "GAP_UP_FADE": "Gap ขึ้น → โดนขาย", "GAP_UP_MIXED": "Gap ขึ้น → ไม่ชัด",
     "GAP_DOWN_GO": "Gap ลง → ลงต่อ", "GAP_DOWN_REVERSAL": "Gap ลง → ดีดกลับ", "GAP_DOWN_MIXED": "Gap ลง → ไม่ชัด",
     "NO_GAP": "ไม่มี gap",
 }
-DRIVER_TH = {"OWN": "ตัวเอง", "SECTOR": "กลุ่ม", "MARKET": "ตลาด"}
+DRIVER_TH = {"OWN": "ตัวเอง", "SECTOR": "กลุ่ม", "MARKET": "ตลาด", "QUIET": "เงียบ (ขยับน้อย)"}
 
 
 def esc(x) -> str:
@@ -62,7 +49,7 @@ def cls(x) -> str:
 
 # ---------- ส่วนคำนวณ ----------
 def driver_share(df: pd.DataFrame) -> pd.DataFrame:
-    big = df[df["change_pct"].abs() >= 1].dropna(subset=["driver"])
+    big = df[(df["change_pct"].abs() >= 1) & (df["driver"] != "QUIET")].dropna(subset=["driver"])
     if big.empty:
         return pd.DataFrame()
     t = big.groupby("ticker")["driver"].value_counts(normalize=True).unstack(fill_value=0) * 100
@@ -70,47 +57,11 @@ def driver_share(df: pd.DataFrame) -> pd.DataFrame:
     return t
 
 
-def label_stats(df: pd.DataFrame) -> pd.DataFrame:
-    g = df[df["label"] != "NO_GAP"].groupby("label")
-    if not len(g):
-        return pd.DataFrame()
-    out = g.agg(n=("ticker", "size"), r1=("ret_1d", "mean"), r3=("ret_3d", "mean"), r5=("ret_5d", "mean"))
-    out["win5"] = g.apply(lambda x: (x["ret_5d"].dropna() > 0).mean() * 100 if x["ret_5d"].notna().any() else np.nan)
-    return out.sort_values("n", ascending=False)
-
-
-def hypothesis_results(df: pd.DataFrame) -> list:
-    res = []
-    for h in HYPOTHESES:
-        try:
-            sub = df.query(h["filter"], engine="python")
-        except Exception:  # noqa: BLE001  (คอลัมน์ยังไม่มี เช่นข้อมูลรายวันไม่มี VWAP)
-            sub = df.iloc[0:0]
-        if h["outcome"]:
-            sub = sub.dropna(subset=[h["outcome"]])
-        n = len(sub)
-        hit = float(h["success"](sub).mean() * 100) if n else np.nan
-        avg = float(sub[h["outcome"]].mean()) if n and h["outcome"] else np.nan
-        if n == 0:
-            status = "ยังไม่เกิดเหตุการณ์ตามเงื่อนไข"
-        elif n < MIN_N:
-            status = f"ตัวอย่างยังน้อย (n={n}) ยังสรุปไม่ได้"
-        elif hit >= 65:
-            status = "เริ่มเห็นแนวโน้มว่าจริง"
-        elif hit <= 35:
-            status = "เริ่มเห็นแนวโน้มว่าไม่จริง"
-        else:
-            status = "ยังก้ำกึ่ง ไม่ต่างจากการสุ่ม"
-        res.append({**h, "n": n, "hit": hit, "avg": avg, "status": status,
-                    "tickers": ", ".join(sorted(sub["ticker"].unique())) if n else ""})
-    return res
-
-
 def conclusions(df: pd.DataFrame, ds: pd.DataFrame) -> list[str]:
     out = []
     for t, r in ds.iterrows():
-        top = max(DRIVER_TH, key=lambda k: r.get(k, 0))
-        out.append(f"<b>{esc(t)}</b>: ในวันที่ขยับเกิน 1% (n={int(r['n'])}) "
+        top = max(("OWN", "SECTOR", "MARKET"), key=lambda k: r.get(k, 0))
+        out.append(f"<b>{esc(t)}</b>: วันที่ขยับเกิน 1% และเกินครึ่ง ATR (n={int(r['n'])}) "
                    f"{r.get(top, 0):.0f}% มาจากปัจจัย<b>{DRIVER_TH[top]}</b> "
                    f"(ตัวเอง {r.get('OWN', 0):.0f}% · กลุ่ม {r.get('SECTOR', 0):.0f}% · ตลาด {r.get('MARKET', 0):.0f}%)")
     ev = df["events"].fillna("").str.contains("CPI|FOMC")
@@ -206,6 +157,95 @@ def bar(r) -> str:
     return f'<div class="bar">{segs}</div><div class="mute">{txt}</div>'
 
 
+def _f(x, fmt="{:.0f}%"):
+    return "–" if x is None or pd.isna(x) else fmt.format(x)
+
+
+def hypothesis_section(s: pd.DataFrame) -> str:
+    rows = []
+    for h in hypothesis_results(s):
+        recent = ", ".join(f"{d} {tk}".strip() for d, tk in h["recent"]) if h["recent"] else ""
+        extra = f"<div class='mute'>{esc(h.get('extra', ''))}</div>" if h.get("extra") else ""
+        rows.append(
+            f"<tr><td class='l'><b>{h['id']}</b> {esc(h['name'])}<div class='mute'>ถูก = {esc(h['meaning'])}"
+            f"{' · ' + esc(h['tickers']) if h['tickers'] else ''}{' · ล่าสุด: ' + esc(recent) if recent else ''}</div>{extra}</td>"
+            f"<td class='l'>{GROUP_TH[h['group']]}</td><td>{h['n']}<div class='mute'>{h['days']} วัน</div></td>"
+            f"<td>{_f(h['hit'])}</td><td>{_f(h['base'])}<div class='mute'>N={h['N']}</div></td>"
+            f"<td class='{cls(h['edge'])}'>{_f(h['edge'], '{:+.0f}')}</td>"
+            f"<td class='{cls(h['avg'])}'>{pct(h['avg'])}<div class='mute'>ปกติ {pct(h['avg_all'])}</div></td>"
+            f"<td class='l'>{esc(h['status'])}</td></tr>")
+    return ("<style>.tw td:first-child{white-space:normal;min-width:260px;max-width:440px}"
+            ".tw td.l:last-child{white-space:normal;min-width:150px}</style>"
+            "<h2>สมมติฐาน</h2><div class='tbl'><table class='tw'><tr><th class='l'>สมมติฐาน</th><th class='l'>ข้อมูล</th>"
+            "<th>n</th><th>ถูก</th><th>อัตราปกติ</th><th>ต่างจากปกติ</th><th>ผลเฉลี่ย 5 วัน</th><th class='l'>สถานะ</th></tr>"
+            + "".join(rows) + "</table></div><p class='mute'>อัตราปกติ = % ที่ผลลัพธ์เดียวกันเกิดขึ้นกับทุกแถวของชุดข้อมูลเดียวกัน "
+            "(ไม่กรองเงื่อนไข) · ต่างจากปกติ = ถูก − อัตราปกติ (จุด %) · ถ้า n ≥ 10 แต่ต่างไม่ถึง ±10 จุด = ไม่ต่างจากปกติ · "
+            "n นับแถว (หุ้น×วัน) ส่วน \"วัน\" คือจำนวนวันไม่ซ้ำ — หลายหุ้นในวันเดียวกันไม่ใช่ตัวอย่างอิสระ</p>")
+
+
+def label_section(s: pd.DataFrame) -> str:
+    out = ["<h2>ผลหลัง gap แยกตามรูปแบบ</h2><p class='mute'>นับว่า \"มี gap\" เมื่อ |gap| ≥ 0.75 เท่าของ ATR 14 วัน "
+           "· แยกตามชนิดข้อมูล ห้ามรวมกันเพราะ intraday ใช้ VWAP ส่วน daily ไม่มี</p>"]
+    for g, t in label_stats(s).items():
+        out.append(f"<h3 style='font-size:15px'>{GROUP_TH[g]} <span class='mute'>· อัตราปกติ (% บวกใน 5 วัน ทุกวัน) "
+                   f"{_f(t['base'].iloc[0])}</span></h3><div class='tbl'><table><tr><th class='l'>รูปแบบ</th><th>n</th>"
+                   "<th>+1 วัน</th><th>+3 วัน</th><th>+5 วัน</th><th>% บวกใน 5 วัน</th><th>ต่างจากปกติ</th></tr>")
+        for lab, r in t.iterrows():
+            warn = " <span class='mute'>(น้อย)</span>" if r["n"] < MIN_N else ""
+            out.append(f"<tr><td class='l'>{esc(LABEL_TH.get(lab, lab))}{warn}</td><td>{int(r['n'])}"
+                       f"<div class='mute'>{int(r['days'])} วัน</div></td>"
+                       + "".join(f"<td class='{cls(r[k])}'>{pct(r[k])}</td>" for k in ("r1", "r3", "r5"))
+                       + f"<td>{_f(r['win5'])}</td><td class='{cls(r['edge'])}'>{_f(r['edge'], '{:+.0f}')}</td></tr>")
+        out.append("</table></div>")
+    return "".join(out)
+
+
+def earnings_section(s: pd.DataFrame) -> str:
+    e, summ = post_earnings(s)
+    if e.empty:
+        return "<h2>หลังงบ</h2><p class='mute'>ยังไม่มีข้อมูลเวลาประกาศงบ (BMO/AMC)</p>"
+    out = ["<h2>หลังงบ: session แรกที่ตลาดตอบสนอง</h2><p class='mute'>BMO = ประกาศก่อนตลาดเปิด → ตอบสนองวันเดียวกัน · "
+           "AMC = ประกาศหลังตลาดปิด → ตอบสนองวันทำการถัดไป · ไปต่อ = ret_5d ทิศเดียวกับวันแรก, กลับตัว = ทิศตรงข้าม · "
+           "อัตราปกติ = % ไปต่อของทุกวันอื่นของหุ้นตัวนั้น</p><div class='tbl'><table><tr><th class='l'>หุ้น</th>"
+           "<th>รอบงบ</th><th>ขยับวันแรก (เฉลี่ย |%|)</th><th>วันปกติ (|%|)</th><th>วันแรกขึ้น</th>"
+           "<th>ไปต่อใน 5 วัน</th><th>อัตราปกติ</th><th>ต่างจากปกติ</th><th class='l'>เวลาประกาศ</th></tr>"]
+    for r in summ.itertuples(index=False):
+        warn = " <span class='mute'>(น้อย)</span>" if r.n5 < MIN_N else ""
+        out.append(f"<tr><td class='l'>{r.ticker}</td><td>{r.n}</td><td>{r.abs_day1:.1f}%</td><td>{r.abs_normal:.1f}%</td>"
+                   f"<td>{r.up_share:.0f}%</td><td>{_f(r.cont)}{warn}<div class='mute'>n={r.n5}</div></td>"
+                   f"<td>{_f(r.base)}</td><td class='{cls(r.edge)}'>{_f(r.edge, '{:+.0f}')}</td><td class='l'>{esc(r.timing)}</td></tr>")
+    out.append("</table></div><details><summary class='mute'>ทุกรอบงบ (ล่าสุดก่อน)</summary><div class='tbl'><table>"
+               "<tr><th class='l'>วันตอบสนอง</th><th class='l'>หุ้น</th><th class='l'>ประกาศ</th><th>gap</th><th>gap/ATR</th>"
+               "<th>วันแรก</th><th>+3 วัน</th><th>+5 วัน</th><th class='l'>หลังจากนั้น</th></tr>")
+    for r in e.itertuples(index=False):
+        out.append(f"<tr><td class='l'>{r.date}</td><td class='l'>{r.ticker}</td><td class='l'>{r.earnings_date} {r.earnings_timing}</td>"
+                   f"<td class='{cls(r.gap_pct)}'>{pct(r.gap_pct)}</td><td>{_f(r.gap_atr, '{:+.2f}')}</td>"
+                   f"<td class='{cls(r.change_pct)}'>{pct(r.change_pct)}</td><td class='{cls(r.ret_3d)}'>{pct(r.ret_3d)}</td>"
+                   f"<td class='{cls(r.ret_5d)}'>{pct(r.ret_5d)}</td><td class='l'>{r.after}</td></tr>")
+    out.append("</table></div></details>")
+    return "".join(out)
+
+
+def trades_section(s: pd.DataFrame) -> str:
+    m, notes = trades_vs_market(s)
+    head = "<h2>การเทรดของฉันเทียบกับสภาพตลาด</h2>"
+    if m.empty:
+        return head + ("<p class='mute'>ยังไม่มีบันทึกใน trades.csv · บอก Claude ว่า \"บันทึกเทรด: ซื้อ MXL 100 หุ้น ที่ 45.20 "
+                       "เพราะ gap ลงแรงแล้วดีดกลับเหนือ VWAP รู้สึกกลัวตกรถ ทำตามแผน\" แล้วจะเพิ่มแถวให้</p>")
+    rows = "".join(
+        f"<tr><td class='l'>{r.date}</td><td class='l'>{r.ticker}</td><td class='l'>{r.action}</td><td>${r.price:,.2f}</td>"
+        f"<td>{'' if pd.isna(r.shares) else int(r.shares)}</td><td class='l'>{esc(LABEL_TH.get(r.label, r.label))}</td>"
+        f"<td class='l'>{esc(DRIVER_TH.get(r.driver, r.driver))}</td><td class='l'>{esc(r.events)}</td>"
+        f"<td class='{cls(r.ret_5d_after)}'>{pct(r.ret_5d_after)}</td><td class='l'>{esc(r.plan_followed)}</td>"
+        f"<td class='l'>{esc(r.reason)}<div class='mute'>{esc(r.emotion)}</div></td></tr>"
+        for r in m.sort_values("date", ascending=False).itertuples(index=False))
+    return (head + "<div class='card'><ul class='c'>" + "".join(f"<li>{x}</li>" for x in notes) + "</ul></div>"
+            "<div class='tbl'><table><tr><th class='l'>วันที่</th><th class='l'>หุ้น</th><th class='l'>ซื้อ/ขาย</th><th>ราคา</th>"
+            "<th>จำนวน</th><th class='l'>รูปแบบวันนั้น</th><th class='l'>ตัวขับ</th><th class='l'>เหตุการณ์</th>"
+            "<th>ราคา 5 วันหลังเทรด</th><th class='l'>ตามแผน</th><th class='l'>เหตุผล / อารมณ์</th></tr>" + rows + "</table></div>"
+            "<p class='mute'>ราคา 5 วันหลังเทรด = ราคาปิดอีก 5 วันทำการ เทียบราคาที่เทรด (สำหรับ SELL ค่าบวก = ราคาขึ้นต่อหลังขาย)</p>")
+
+
 def build(demo: bool) -> str:
     import capture  # ใช้ load_summary เพื่อรวม notes.csv
     s = capture.load_summary()
@@ -230,11 +270,23 @@ def build(demo: bool) -> str:
         c = ctx[ctx["date"] == last].iloc[0]
         ev_today = today_rows["events"].str.split(";").explode().replace("", np.nan).dropna().unique()
         p.append("<h2>ภาพรวมตลาดวันล่าสุด</h2><div class='grid'>")
-        for k, name in [("SPY", "S&P 500 (SPY)"), ("QQQ", "Nasdaq (QQQ)"), ("VIX", "VIX"),
-                        ("US10Y", "ยีลด์ 10 ปี"), ("OIL", "น้ำมัน")]:
+        cs = ctx.sort_values("date").reset_index(drop=True)
+        prev = cs.iloc[cs.index[cs["date"] == last][0] - 1] if (cs["date"] == last).idxmax() > 0 else None
+        for k, name in [("SPY", "S&P 500 (SPY)"), ("QQQ", "Nasdaq (QQQ)"), ("OIL", "น้ำมัน")]:
             v = c.get(f"{k}_chg_pct")
             p.append(f"<div class='card'><div class='mute'>{name}</div><div class='big {cls(v)}'>{pct(v, 2)}</div>"
                      f"<div class='mute'>{esc(c.get(f'{k}_close'))}</div></div>")
+        vix, vchg = c.get("VIX_close"), c.get("VIX_chg_pct")
+        vpts = vix - prev["VIX_close"] if prev is not None and pd.notna(vix) else np.nan
+        lvl = "ต่ำ (<15)" if vix < 15 else "ปกติ (15–20)" if vix < 20 else "สูง (20–30)" if vix < 30 else "สูงมาก (>30)"
+        p.append(f"<div class='card'><div class='mute'>VIX (ความกลัวของตลาด)</div><div class='big'>{vix:.2f}</div>"
+                 f"<div class='mute'>{lvl} · <span class='{cls(-vpts if pd.notna(vpts) else None)}'>"
+                 f"{'' if pd.isna(vpts) else f'{vpts:+.2f} จุด'}</span> ({pct(vchg, 1)})</div></div>")
+        y, ybp = c.get("US10Y_close"), np.nan
+        if prev is not None and pd.notna(y):
+            ybp = (y - prev["US10Y_close"]) * 100
+        p.append(f"<div class='card'><div class='mute'>ยีลด์พันธบัตร 10 ปี</div><div class='big'>{y:.2f}%</div>"
+                 f"<div class='mute'>{'' if pd.isna(ybp) else f'{ybp:+.0f} bp'} (1 bp = 0.01%)</div></div>")
         p.append("</div>")
         if len(ev_today):
             p.append("<p>" + "".join(f"<span class='tag'>{esc(e)}</span>" for e in ev_today) + "</p>")
@@ -246,16 +298,23 @@ def build(demo: bool) -> str:
     for _, r in today_rows.iterrows():
         tags = "".join(f"<span class='tag'>{esc(e)}</span>" for e in str(r["events"]).split(";") if e)
         extra = (f"<div class='mute'>pre-market {pct(r.get('pre_gap_pct'))} · VWAP {pct(r.get('close_vs_vwap_pct'))}"
-                 f" · คลื่นขาย {esc(r.get('sell_waves'))}</div>") if pd.notna(r.get("vwap")) else ""
+                 f" · คลื่นขาย {'–' if pd.isna(r.get('sell_waves')) else int(r.get('sell_waves'))}</div>") if pd.notna(r.get("vwap")) else ""
         note = f"<div class='mute'>📝 {esc(r['notes'])}</div>" if pd.notna(r.get("notes")) and r.get("notes") else ""
+        ga = "–" if pd.isna(r.get("gap_atr")) else f"{r.get('gap_atr'):+.2f}"
         p.append(f"<div class='card'><b>{esc(r['ticker'])}</b> <span class='mute'>vs {esc(r['peer'])}</span>"
                  f"<div class='big {cls(r['change_pct'])}'>${r['close']:,.2f} "
                  f"<span style='font-size:15px'>{pct(r['change_pct'], 2)}</span></div>"
-                 f"<div>gap {pct(r['gap_pct'])} · {esc(LABEL_TH.get(r['label'], r['label']))}</div>{extra}"
+                 f"<div>gap {pct(r['gap_pct'])} ({ga} ATR) · "
+                 f"{esc(LABEL_TH.get(r['label'], r['label']))}</div>{extra}"
                  f"{bar(r)}<div>ตัวขับหลัก: <b>{esc(DRIVER_TH.get(r.get('driver'), '–'))}</b></div>{tags}{note}</div>")
     p.append("</div>")
 
     # ข้อสรุปปัจจัย
+    p.append("<h2>ผูกกับตลาด / กลุ่มแค่ไหน (R² 60 วัน)</h2><div class='card'><ul class='c'>")
+    p += [f"<li>{linkage_text(x)}</li>" for x in linkage(s)] or ["<li>ข้อมูลยังไม่พอ</li>"]
+    p.append("</ul><div class='mute'>R² = สัดส่วนการขยับรายวันที่อธิบายได้ด้วยดัชนีนั้น (0–100%) · "
+             "R² ของกลุ่มรวมส่วนที่มาจากตลาดไว้ด้วย จึงใช้ค่าที่มากกว่าเป็นฐานของ \"เฉพาะตัว\" · "
+             "beta 1.5 = SPY ขยับ 1% หุ้นมักขยับ ~1.5%</div></div>")
     p.append("<h2>ข้อสรุปปัจจัยภายนอก / ภายใน (ทั้งช่วงข้อมูล)</h2><div class='card'><ul class='c'>")
     p += [f"<li>{x}</li>" for x in conclusions(s, ds)] or ["<li>ข้อมูลยังไม่พอ</li>"]
     p.append("</ul><div class='mute'>ตลาด = SPY · กลุ่ม = ETF/peer เหนือกว่า SPY · ตัวเอง = หุ้นเหนือกว่า peer "
@@ -267,28 +326,7 @@ def build(demo: bool) -> str:
     from volume_profile import section_html
     p.append(section_html(sorted(s["ticker"].unique())))
 
-    # สมมติฐาน
-    p.append("<h2>สมมติฐาน</h2><div class='tbl'><table><tr><th class='l'>สมมติฐาน</th><th>n</th>"
-             "<th>ถูก</th><th>ผลเฉลี่ย 5 วัน</th><th class='l'>สถานะ</th></tr>")
-    for h in hypothesis_results(s):
-        hit = f"{h['hit']:.0f}%" if not np.isnan(h["hit"]) else "–"
-        p.append(f"<tr><td class='l'><b>{h['id']}</b> {esc(h['name'])}<div class='mute'>ถูก = {esc(h['meaning'])}"
-                 f"{' · ' + esc(h['tickers']) if h['tickers'] else ''}</div></td><td>{h['n']}</td><td>{hit}</td>"
-                 f"<td class='{cls(h['avg'])}'>{pct(h['avg'])}</td><td class='l'>{esc(h['status'])}</td></tr>")
-    p.append("</table></div>")
-
-    # label stats
-    ls = label_stats(s)
-    if not ls.empty:
-        p.append("<h2>ผลหลัง gap แยกตามรูปแบบ</h2><div class='tbl'><table><tr><th class='l'>รูปแบบ</th><th>n</th>"
-                 "<th>+1 วัน</th><th>+3 วัน</th><th>+5 วัน</th><th>% บวกใน 5 วัน</th></tr>")
-        for lab, r in ls.iterrows():
-            warn = " <span class='mute'>(น้อย)</span>" if r["n"] < MIN_N else ""
-            win = "–" if pd.isna(r["win5"]) else f"{r['win5']:.0f}%"
-            p.append(f"<tr><td class='l'>{esc(LABEL_TH.get(lab, lab))}{warn}</td><td>{int(r['n'])}</td>"
-                     + "".join(f"<td class='{cls(r[k])}'>{pct(r[k])}</td>" for k in ("r1", "r3", "r5"))
-                     + f"<td>{win}</td></tr>")
-        p.append("</table></div>")
+    p.append(hypothesis_section(s) + label_section(s) + earnings_section(s) + trades_section(s))
 
     # ปฏิทิน
     today = datetime.now(ET).date()

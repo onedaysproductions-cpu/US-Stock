@@ -26,7 +26,8 @@ def one_minute(sym: str) -> pd.DataFrame:
     parts = []
     while start < end:
         stop = min(start + timedelta(days=CHUNK_DAYS), end)
-        if all(d.weekday() >= 5 for d in pd.date_range(start, stop - timedelta(days=1))):
+        # ใช้วันที่ล้วน (ไม่มี timezone) กันปัญหาช่วงเปลี่ยนเวลาฤดูร้อน/หนาวของสหรัฐฯ
+        if all(d.weekday() >= 5 for d in pd.date_range(start.date(), (stop - timedelta(days=1)).date())):
             start = stop      # ช่วงที่มีแต่เสาร์-อาทิตย์ ไม่ต้องขอ
             continue
         df = c.history(sym, start=start.strftime("%Y-%m-%d"), end=stop.strftime("%Y-%m-%d"),
@@ -95,7 +96,8 @@ def main() -> None:
     # ละเอียดกว่าชนะ / ถ้าเท่ากัน แถวที่คำนวณใหม่ชนะ (notes อยู่ใน notes.csv จะใส่กลับด้านล่าง)
     allr = (allr.sort_values(["_p", "_o"], kind="stable").drop_duplicates(["date", "ticker"], keep="first")
                 .drop(columns=["_p", "_o"]).sort_values(["date", "ticker"]))
-    allr = c.apply_notes(c.tag_events(c.fill_followups(allr.reset_index(drop=True), dailies)))
+    from enrich import enrich
+    allr = enrich(c.apply_notes(c.tag_events(c.fill_followups(allr.reset_index(drop=True), dailies))))
     allr.to_csv(c.SUMMARY, index=False)
 
     # บริบทตลาดย้อนหลัง

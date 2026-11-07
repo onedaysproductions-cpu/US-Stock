@@ -1,0 +1,3 @@
+date,ticker,action,price,shares,reason,emotion,plan_followed,note
+# ตัวอย่าง (บรรทัดที่ขึ้นต้นด้วย # จะไม่ถูกนับ):
+# 2026-11-05,MXL,BUY,45.20,100,gap ลงแรงแล้วดีดกลับเหนือ VWAP,กลัวตกรถ,Y,ซื้อครึ่งไม้ก่อน
