@@ -1,0 +1,16 @@
+date,ticker,notes
+2026-08-18,MXL,unconfirmed: no clear catalyst found (part_own -9.4)
+2026-08-21,UUUU,unconfirmed: uranium sector rally (part_sector +4.7)
+2026-08-24,MO,unconfirmed: no company news found; staples sector strength (part_sector +2.0)
+2026-08-26,BTSG,unconfirmed: no clear catalyst found (part_own +8.2)
+2026-09-10,BTSG,unconfirmed: no clear catalyst found (part_own -6.1)
+2026-10-02,MXL,unconfirmed: continuation of Sep AI-optical rally; no specific news found for the day
+2026-10-07,UUUU,unconfirmed: no clear catalyst found; uranium sector also weak (part_sector -4.2)
+2026-10-14,UUUU,"unconfirmed: no clear catalyst found; CPI day, uranium sector weak (part_sector -3.8)"
+2026-10-22,MO,unconfirmed: no company news found; sector move (part_sector +4.5)
+2026-10-22,STRL,unconfirmed: sector selloff (part_sector -6.9) ahead of 10-28 earnings
+2026-10-29,MO,earnings beat Q3 2026 + raised 2026 EPS guidance + $1B buyback expansion
+2026-10-30,BTSG,"earnings beat Q3 2026 (rev +26% y/y, adj EPS 0.54 vs 0.48) + raised 2026 guidance"
+2026-11-04,STRL,unconfirmed: sector selloff (part_sector -13.3); not earnings day (Q3 reported 10-28 AMC)
+2026-11-05,MXL,"unconfirmed: broad selloff day (SPY -4.4%, QQQ -6.5%); no company news found"
+2026-11-05,STRL,unconfirmed: market selloff (SPY -4.4%) + sector (part_sector -7.9)
