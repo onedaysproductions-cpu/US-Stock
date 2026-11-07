@@ -329,4 +329,9 @@ def section_html(tickers: list[str]) -> str:
         f"<tr><th class='l'>หุ้น</th>{head}</tr>{rows}</table></div></details>"
         "<div class='tip' id='vp-tip'></div></div>"
         f"<script type='application/json' id='vp-data'>{json.dumps(payload, separators=(',', ':'))}</script>"
-        f"<script>{JS}</script>" + compare_html(data, groups))
+        f"<script>{JS}</script>" + compare_html(data, groups) + _extended(list(data), groups))
+
+
+def _extended(tickers: list[str], groups: dict) -> str:
+    import extended_hours
+    return extended_hours.section_html(tickers, groups)
