@@ -145,7 +145,7 @@ def day_change(d: pd.DataFrame, day) -> float | None:
 
 def earnings_dates(sym: str) -> list:
     try:
-        ed = yf.Ticker(sym).get_earnings_dates(limit=12)
+        ed = yf.Ticker(sym).get_earnings_dates(limit=28)   # ~5 ปีย้อนหลัง + ไตรมาสข้างหน้า
         if ed is None or ed.empty:
             return []
         return sorted({ts.tz_convert(ET).date() for ts in ed.index})
@@ -214,16 +214,21 @@ def tag_events(df: pd.DataFrame) -> pd.DataFrame:
     if ev.empty or df.empty:
         return df
     ev["d"] = pd.to_datetime(ev["date"]).dt.date
+    # สร้างตารางค้นหาครั้งเดียว (เร็วพอสำหรับข้อมูลหลายปี)
+    earn = {}      # (ticker, date) สำหรับช่วง ±1 วันรอบวันประกาศงบ
+    other = {}     # date -> [(type, ticker)]
+    for e in ev.itertuples(index=False):
+        if e.type == "EARNINGS":
+            for k in (-1, 0, 1):
+                earn[(e.ticker, e.d + pd.Timedelta(days=k).to_pytimedelta())] = True
+        else:
+            other.setdefault(e.d, []).append((e.type, e.ticker))
     tags = []
-    for _, r in df.iterrows():
-        day = pd.Timestamp(r["date"]).date()
-        t = set()
-        for _, e in ev.iterrows():
-            if e["type"] == "EARNINGS":
-                if e["ticker"] == r["ticker"] and abs((e["d"] - day).days) <= 1:
-                    t.add("EARNINGS")
-            elif e["d"] == day and e["ticker"] in ("", r["ticker"]):
-                t.add(e["type"])
+    for day_s, tk in zip(df["date"], df["ticker"]):
+        day = pd.Timestamp(day_s).date()
+        t = {typ for typ, etk in other.get(day, []) if etk in ("", tk)}
+        if (tk, day) in earn:
+            t.add("EARNINGS")
         tags.append(";".join(sorted(t)))
     df["events"] = tags
     df["earnings_window"] = df["events"].str.contains("EARNINGS")

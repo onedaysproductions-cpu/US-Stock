@@ -17,7 +17,7 @@
 - `part_market` = การขยับของ SPY, `part_sector` = peer เหนือ SPY, `part_own` = หุ้นเหนือ peer
 - `driver` = ส่วนที่ใหญ่ที่สุด (MARKET / SECTOR / OWN)
 - `events` = ป้ายเหตุการณ์วันนั้น (CPI, FOMC, EARNINGS ±1 วัน)
-- `source` = live_1m (ละเอียดสุด) / backfill_5m / backfill_1d (ไม่มี VWAP, pre-market, sell_waves)
+- `source` = live_1m (ละเอียดสุด) / backfill_1m (~30 วัน) / backfill_5m (~60 วัน) / backfill_1d (5 ปี, ไม่มี VWAP, pre-market, sell_waves)
 
 ## งานรายวัน (เมื่อถูกสั่ง "อัปเดตวันนี้")
 1. เปิดแถวของวันล่าสุดใน daily_summary.csv
