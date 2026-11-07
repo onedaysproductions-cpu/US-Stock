@@ -221,6 +221,9 @@ def build(demo: bool) -> str:
              + " · ".join(f"{k} {v}" for k, v in s["source"].value_counts().items()) + "</div>")
     if demo:
         p.append('<div class="demo">ตัวอย่างหน้าตา: ตัวเลขทั้งหมดเป็นข้อมูลสมมติ ไม่ใช่ราคาจริง</div>')
+    from glossary import glossary_html
+    from volume_profile import shared_head
+    p.append(shared_head() + glossary_html())
 
     # ตลาด
     if not ctx.empty and last in set(ctx["date"]):
@@ -246,7 +249,8 @@ def build(demo: bool) -> str:
                  f" · คลื่นขาย {esc(r.get('sell_waves'))}</div>") if pd.notna(r.get("vwap")) else ""
         note = f"<div class='mute'>📝 {esc(r['notes'])}</div>" if pd.notna(r.get("notes")) and r.get("notes") else ""
         p.append(f"<div class='card'><b>{esc(r['ticker'])}</b> <span class='mute'>vs {esc(r['peer'])}</span>"
-                 f"<div class='big {cls(r['change_pct'])}'>{pct(r['change_pct'], 2)}</div>"
+                 f"<div class='big {cls(r['change_pct'])}'>${r['close']:,.2f} "
+                 f"<span style='font-size:15px'>{pct(r['change_pct'], 2)}</span></div>"
                  f"<div>gap {pct(r['gap_pct'])} · {esc(LABEL_TH.get(r['label'], r['label']))}</div>{extra}"
                  f"{bar(r)}<div>ตัวขับหลัก: <b>{esc(DRIVER_TH.get(r.get('driver'), '–'))}</b></div>{tags}{note}</div>")
     p.append("</div>")
@@ -258,6 +262,8 @@ def build(demo: bool) -> str:
              "(สะท้อนข่าว/งบของบริษัท)</div></div>")
 
     # กราฟช่วงเวลาซื้อ/ขายใน 1 วัน (จากแท่ง 1 นาที)
+    import intraday_price
+    p.append(intraday_price.section_html(sorted(s["ticker"].unique())))
     from volume_profile import section_html
     p.append(section_html(sorted(s["ticker"].unique())))
 

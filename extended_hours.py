@@ -13,6 +13,7 @@ from datetime import datetime, time, timedelta
 
 import pandas as pd
 
+from glossary import howto
 from volume_profile import BKK, ET, GROUPS, INTRA, MAX_DAYS, ROOT
 
 STEP = 5
@@ -63,7 +64,8 @@ def build(tickers: list[str]) -> dict:
             df = pd.read_csv(f, index_col=0)
             df.index = pd.to_datetime(df.index, utc=True).tz_convert(ET)
             per[d] = {"pre": _session(df, PRE, float(row["prev_close"]), SLOTS["pre"]),
-                      "post": _session(df, POST, float(row["close"]), SLOTS["post"])}
+                      "post": _session(df, POST, float(row["close"]), SLOTS["post"]),
+                      "ref": {"pre": float(row["prev_close"]), "post": float(row["close"])}}
         if per:
             out[tk] = per
     return out
@@ -137,9 +139,11 @@ function draw(){
       xh.setAttribute('x1',xx); xh.setAttribute('x2',xx); xh.setAttribute('visibility','visible');
       const f=v=>v==null?'–':((v>0&&!abs?'+':'')+v.toFixed(2)+'%'), fa=v=>v==null?'–':Math.round(v)+'%';
       const A=r[ses].a, Bv=r[ses].b, ref=ses==='pre'?'เทียบราคาปิดวันก่อน':'เทียบราคาปิดวันนี้';
+      const one=!key.startsWith('G:') && X.t[tk][key], base=one?X.t[tk][key].ref[ses]:null;
+      const usd=v=>(base&&v!=null&&!abs)?' ($'+(base*(1+v/100)).toFixed(base>=10?2:3)+')':'';
       tip.innerHTML=`<b>${tk}</b> ${X.th[ses][i]} น. (ไทย) · ${X.et[ses][i]} ET · ${ref}<br>`+
         `<span class="ln" style="background:var(--normal)"></span>วันปกติ: ราคา ${f(A.p&&A.p[i])} · คึกคัก ${fa(A.a&&A.a[i])}<br>`+
-        `<span class="ln" style="background:var(--event)"></span>${cmp.options[cmp.selectedIndex].text}: ราคา ${f(Bv.p&&Bv.p[i])} · คึกคัก ${fa(Bv.a&&Bv.a[i])}`;
+        `<span class="ln" style="background:var(--event)"></span>${cmp.options[cmp.selectedIndex].text}: ราคา ${f(Bv.p&&Bv.p[i])}${usd(Bv.p&&Bv.p[i])} · คึกคัก ${fa(Bv.a&&Bv.a[i])}`;
       tip.style.display='block'; tip.style.left=Math.min(e.clientX+12,innerWidth-360)+'px'; tip.style.top=(e.clientY+12)+'px';});
     ov.addEventListener('mouseleave',()=>{tip.style.display='none'; xh.setAttribute('visibility','hidden');});
   }
@@ -165,7 +169,12 @@ def section_html(tickers: list[str], groups: dict) -> str:
                      for tk in data)
     return (
         "<h2>ก่อนตลาดเปิด / หลังตลาดปิด: ราคาและความคึกคัก</h2><div class='card vc'>"
-        "<div class='ctl'><label>เทียบ: <select id='vx-cmp'>" + opts + "</select></label>"
+        + howto("ราคาและความคึกคักนอกเวลาตลาด เทียบวันพิเศษกับวันปกติ", [
+            "ซ้าย = ก่อนตลาดเปิด (15:00–21:30 น. ไทย) · ขวา = หลังตลาดปิด (04:00–08:00 น. ไทย)",
+            "ครึ่งบน = ราคาขึ้น/ลงกี่ % (ก่อนเปิดเทียบราคาปิดวันก่อน, หลังปิดเทียบราคาปิดวันนั้น) → ดูว่า gap เริ่มก่อตัวตอนกี่โมง",
+            "ครึ่งล่าง = ความคึกคัก: % ของนาทีที่มีการซื้อขายเกิดขึ้น (100% = ซื้อขายทุกนาที) → ยิ่งสูง = มีคนสนใจซื้อขายมาก",
+            "เลือกวันเดียวแล้วเอาเมาส์ชี้ จะเห็นราคาเป็นดอลลาร์ด้วย"])
+        + "<div class='ctl'><label>เทียบ: <select id='vx-cmp'>" + opts + "</select></label>"
         "<label>ราคาแสดงเป็น: <select id='vx-met'><option value='signed'>% ขึ้น/ลง</option>"
         "<option value='abs'>ขนาดการขยับ (ไม่สนทิศ)</option></select></label>"
         "<span><i class='ln' style='background:var(--normal)'></i>วันปกติ (เฉลี่ย)</span>"

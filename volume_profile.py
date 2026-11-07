@@ -16,6 +16,8 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
+from glossary import howto
+
 ROOT = Path(__file__).resolve().parent
 INTRA = ROOT / "data" / "intraday"
 ET = ZoneInfo("America/New_York")
@@ -100,7 +102,7 @@ CSS = """
 .vp select{font:inherit;padding:4px 8px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--ink)}
 .vp .sw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:-1px}
 .vp .ch{margin:0 0 14px}.vp .ch h3{font-size:15px;margin:0 0 2px}.vp svg{width:100%;height:auto;display:block}
-.vp .tip{position:fixed;pointer-events:none;background:var(--card);border:1px solid var(--line);border-radius:8px;
+.tip{position:fixed;pointer-events:none;background:var(--card);border:1px solid var(--line);border-radius:8px;
 padding:6px 9px;font-size:12.5px;box-shadow:0 4px 14px rgba(0,0,0,.12);display:none;z-index:9;white-space:nowrap}
 .vp details{margin-top:6px}.vp details table{font-size:12.5px}
 """
@@ -184,9 +186,9 @@ def day_groups(tickers: list[str]) -> dict:
 
 
 CMP_CSS = """
-.vp,.vc{--normal:#2a78d6;--event:#d55181}.vc{--grid:#e4e2dd;--axis:#6e6e73}
-@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) :is(.vp,.vc){--normal:#3987e5;--event:#e87ba4}:root:not([data-theme="light"]) .vc{--grid:#2e2e33;--axis:#9a9aa0}}
-:root[data-theme="dark"] :is(.vp,.vc){--normal:#3987e5;--event:#e87ba4}:root[data-theme="dark"] .vc{--grid:#2e2e33;--axis:#9a9aa0}
+:root{--normal:#2a78d6;--event:#d55181}.vc{--grid:#e4e2dd;--axis:#6e6e73}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--normal:#3987e5;--event:#e87ba4}:root:not([data-theme="light"]) .vc{--grid:#2e2e33;--axis:#9a9aa0}}
+:root[data-theme="dark"]{--normal:#3987e5;--event:#e87ba4}:root[data-theme="dark"] .vc{--grid:#2e2e33;--axis:#9a9aa0}
 .vc .ctl{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:0 0 10px}
 .vc select{font:inherit;padding:4px 8px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--ink)}
 .ln{display:inline-block;width:16px;height:3px;border-radius:2px;margin-right:5px;vertical-align:3px}
@@ -274,9 +276,14 @@ def compare_html(data: dict, groups: dict) -> str:
     charts = "".join(f"<div class='ch'><h3>{tk} <span class='mute' id='vc-n-{tk}'></span></h3><div id='vc-{tk}'></div></div>"
                      for tk in data)
     return (
-        f"<style>{CMP_CSS}</style>"
+        ""
         "<h2>วันพิเศษ vs วันปกติ: ซื้อขายต่างกันช่วงไหน</h2><div class='card vc'>"
-        "<div class='ctl'><label>เทียบ: <select id='vc-cmp'>" + opts + "</select></label>"
+        + howto("วันที่มีเหตุการณ์พิเศษ มีการซื้อขายต่างจากวันปกติช่วงไหน", [
+            "เส้นน้ำเงิน = ค่าเฉลี่ยของวันปกติ · เส้นชมพู = วันพิเศษที่เลือก (กลุ่ม หรือวันเดียว)",
+            "เส้นชมพูสูงกว่าน้ำเงินช่วงไหน = วันพิเศษซื้อขายหนาแน่นกว่าปกติช่วงนั้น",
+            "\"volume เทียบวันปกติ\" บอกว่าคึกคักกว่าปกติกี่เท่า · \"ซื้อสุทธิ\" บอกว่าเอียงไปฝั่งซื้อหรือขาย",
+            "หัวกราฟบอก n ถ้าวันพิเศษมีไม่ถึง 3 วัน ให้ดูเป็นตัวอย่าง ไม่ใช่ข้อสรุป"])
+        + "<div class='ctl'><label>เทียบ: <select id='vc-cmp'>" + opts + "</select></label>"
         "<label>วัดเป็น: <select id='vc-met'><option value='share'>% ของ volume ทั้งวัน</option>"
         "<option value='rel'>volume เทียบวันปกติ (% ของ volume ทั้งวันปกติ)</option>"
         "<option value='net'>ซื้อสุทธิ (ซื้อ − ขาย, % ของวัน)</option></select></label>"
@@ -316,9 +323,14 @@ def section_html(tickers: list[str]) -> str:
         for tk, d in data.items())
     head = "".join(f"<th>{labels[[s.hour for s in slots].index(h)][:2]}:xx</th>" for h in hours)
     return (
-        f"<style>{CSS}</style>"
+        ""
         "<h2>ช่วงเวลาไหนซื้อ/ขายเยอะใน 1 วัน</h2><div class='card vp'>"
-        "<div class='ctl'><label>ดู: <select id='vp-day'>" + opts + "</select></label>"
+        + howto("ช่วงเวลาไหนของวันที่มีการซื้อขายหนาแน่น และเอียงไปฝั่งซื้อหรือขาย", [
+            "แท่งสีน้ำเงินเหนือเส้น = ฝั่งซื้อ · แท่งสีส้มใต้เส้น = ฝั่งขาย (เป็นค่าประมาณ ดูนิยามด้านบน)",
+            "แท่งยิ่งสูง = ช่วง 5 นาทีนั้นมีการซื้อขายมาก (% ของทั้งวัน) · ทุกหุ้นใช้สเกลเดียวกันจึงเทียบกันได้",
+            "เลือก \"เฉลี่ย 20 วัน\" เพื่อดูพฤติกรรมปกติ หรือเลือกวันที่เพื่อดูเฉพาะวันนั้น",
+            "ปกติหุ้นจะซื้อขายหนาแน่นช่วงเปิดตลาด (21:30) และก่อนปิด (03:55–04:00) เป็นรูปตัว U"])
+        + "<div class='ctl'><label>ดู: <select id='vp-day'>" + opts + "</select></label>"
         "<span><i class='sw' style='background:var(--buy)'></i>ฝั่งซื้อ (เหนือเส้น)</span>"
         "<span><i class='sw' style='background:var(--sell)'></i>ฝั่งขาย (ใต้เส้น)</span></div>"
         + charts +
@@ -327,7 +339,7 @@ def section_html(tickers: list[str]) -> str:
         "ฝั่งซื้อ/ขายเป็น<b>ค่าประมาณ</b>: volume ของแท่ง 1 นาทีที่ปิดสูงกว่าเปิด = ซื้อ, ต่ำกว่า = ขาย</div>"
         f"<details><summary class='mute'>ตารางรายชั่วโมง (ซื้อ / ขาย %, เฉลี่ย)</summary><div class='tbl'><table>"
         f"<tr><th class='l'>หุ้น</th>{head}</tr>{rows}</table></div></details>"
-        "<div class='tip' id='vp-tip'></div></div>"
+        "</div>"
         f"<script type='application/json' id='vp-data'>{json.dumps(payload, separators=(',', ':'))}</script>"
         f"<script>{JS}</script>" + compare_html(data, groups) + _extended(list(data), groups))
 
@@ -335,3 +347,8 @@ def section_html(tickers: list[str]) -> str:
 def _extended(tickers: list[str], groups: dict) -> str:
     import extended_hours
     return extended_hours.section_html(tickers, groups)
+
+
+def shared_head() -> str:
+    """CSS + tooltip ที่ทุกกราฟใช้ร่วมกัน (ใส่ไว้ต้นหน้า ก่อนกราฟทุกตัว)"""
+    return f"<style>{CSS}{CMP_CSS}</style><div class='tip' id='vp-tip'></div>"
