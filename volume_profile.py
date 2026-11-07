@@ -153,6 +153,143 @@ sel.addEventListener('change',draw); draw();
 """
 
 
+SWING_SPY = 1.5     # |SPY| >= นี้ = วันตลาดผันผวนแรง
+BIG_MOVE = 5.0      # |หุ้น| >= นี้ = วันหุ้นขยับแรง
+GROUPS = {"SWING": f"ตลาดผันผวนแรง (SPY ±{SWING_SPY}%+)", "MACRO": "วัน CPI / FOMC",
+          "EARN": "ช่วงประกาศงบ (±1 วัน)", "BIG": f"หุ้นขยับแรง (±{BIG_MOVE:.0f}%+)"}
+
+
+def day_groups(tickers: list[str]) -> dict:
+    """จัดกลุ่มแต่ละวันของแต่ละหุ้น: วันพิเศษ (SWING/MACRO/EARN/BIG) หรือ NORMAL"""
+    import capture
+    s = capture.load_summary()
+    if s.empty:
+        return {}
+    s["events"] = s["events"].fillna("")
+    ctx_f = ROOT / "data" / "market_context.csv"
+    spy = pd.read_csv(ctx_f).set_index("date")["SPY_chg_pct"].to_dict() if ctx_f.exists() else {}
+    out = {}
+    for r in s[s["ticker"].isin(tickers)].itertuples(index=False):
+        g = []
+        if abs(spy.get(r.date) or 0) >= SWING_SPY:
+            g.append("SWING")
+        if "CPI" in r.events or "FOMC" in r.events:
+            g.append("MACRO")
+        if "EARNINGS" in r.events:
+            g.append("EARN")
+        if pd.notna(r.change_pct) and abs(r.change_pct) >= BIG_MOVE:
+            g.append("BIG")
+        out.setdefault(r.ticker, {})[r.date] = g or ["NORMAL"]
+    return out
+
+
+CMP_CSS = """
+.vp,.vc{--normal:#2a78d6;--event:#d55181}.vc{--grid:#e4e2dd;--axis:#6e6e73}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) :is(.vp,.vc){--normal:#3987e5;--event:#e87ba4}:root:not([data-theme="light"]) .vc{--grid:#2e2e33;--axis:#9a9aa0}}
+:root[data-theme="dark"] :is(.vp,.vc){--normal:#3987e5;--event:#e87ba4}:root[data-theme="dark"] .vc{--grid:#2e2e33;--axis:#9a9aa0}
+.vc .ctl{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:0 0 10px}
+.vc select{font:inherit;padding:4px 8px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--ink)}
+.ln{display:inline-block;width:16px;height:3px;border-radius:2px;margin-right:5px;vertical-align:3px}
+.vc .ch{margin:0 0 14px}.vc .ch h3{font-size:15px;margin:0 0 2px}.vc svg{width:100%;height:auto;display:block}
+"""
+
+CMP_JS = r"""
+(function(){
+const D = JSON.parse(document.getElementById('vp-data').textContent);
+const cmp=document.getElementById('vc-cmp'), met=document.getElementById('vc-met'), tip=document.getElementById('vp-tip');
+const W=720,H=200,L=40,R=70,T=12,B=24, N=D.labels.length, dx=(W-L-R)/(N-1);
+function vals(tk,d,m,base){const p=D.t[tk].days[d]; if(!p) return null;
+  return p.buy.map((b,i)=>{const u=p.sell[i];
+    if(m==='net') return b-u; if(m==='rel') return (b+u)*p.vol/base; return b+u;});}
+function avg(tk,dates,m,base){const rows=dates.map(d=>vals(tk,d,m,base)).filter(Boolean); if(!rows.length) return null;
+  return rows[0].map((_,i)=>rows.reduce((a,r)=>a+r[i],0)/rows.length);}
+function smooth(a){return a.map((_,i)=>{const w=a.slice(Math.max(0,i-1),i+2);return w.reduce((x,y)=>x+y,0)/w.length;});}
+function draw(){
+  const key=cmp.value, m=met.value;
+  const res={}; let lo=0, hi=0;
+  for(const tk in D.t){
+    const g=D.g[tk]||{}, have=Object.keys(D.t[tk].days);
+    const norm=have.filter(d=>(g[d]||['NORMAL']).includes('NORMAL'));
+    const ev = key.startsWith('G:') ? have.filter(d=>(g[d]||[]).includes(key.slice(2))) : (have.includes(key)?[key]:[]);
+    const base = norm.length ? norm.reduce((a,d)=>a+D.t[tk].days[d].vol,0)/norm.length : 1;
+    const a=avg(tk,norm,m,base), b=avg(tk,ev,m,base);
+    res[tk]={a:a&&smooth(a), b:b&&smooth(b), na:norm.length, nb:ev.length};
+    [a,b].forEach(s=>s&&smooth(s).forEach(v=>{hi=Math.max(hi,v);lo=Math.min(lo,v);}));
+  }
+  const nice=v=>{if(v<=0) return 0; const e=Math.pow(10,Math.floor(Math.log10(v))), f=v/e;
+    return (f<=1?1:f<=2?2:f<=2.5?2.5:f<=5?5:10)*e;};
+  hi=nice(hi||1); lo=lo<0?-nice(-lo):0;
+  const y=v=>T+(H-T-B)*(hi-v)/(hi-lo), x=i=>L+i*dx;
+  const unit = m==='rel' ? '%' : '%';
+  for(const tk in res){
+    const box=document.getElementById('vc-'+tk), r=res[tk];
+    const head=document.getElementById('vc-n-'+tk);
+    head.textContent=`· วันปกติ n=${r.na} · วันที่เลือก n=${r.nb}`+(r.nb && r.nb<3?' (ตัวอย่างน้อย)':'');
+    if(!r.a && !r.b){box.innerHTML='<div class="mute">ไม่มีข้อมูล</div>';continue;}
+    let g=`<rect x="${x(D.open_i)}" y="${T}" width="${x(D.close_i)-x(D.open_i)}" height="${H-T-B}" fill="var(--grid)" opacity=".35"/>`;
+    const ticks=(lo<0?[lo,0,hi]:[0,hi/2,hi]).map(v=>+v.toFixed(2));
+    ticks.forEach(v=>{g+=`<line x1="${L}" x2="${W-R}" y1="${y(v)}" y2="${y(v)}" stroke="var(--grid)"/>`+
+      `<text x="${L-4}" y="${y(v)+4}" text-anchor="end" font-size="10" fill="var(--axis)">${v}${unit}</text>`;});
+    if(lo<0) g+=`<line x1="${L}" x2="${W-R}" y1="${y(0)}" y2="${y(0)}" stroke="var(--axis)"/>`;
+    D.labels.forEach((lb,i)=>{ if(i%12===0) g+=`<text x="${x(i)}" y="${H-6}" font-size="10" fill="var(--axis)" text-anchor="middle">${lb}</text>`;});
+    const path=s=>s.map((v,i)=>(i?'L':'M')+x(i).toFixed(1)+' '+y(v).toFixed(1)).join(' ');
+    const lab=(s,txt,col)=>`<text x="${W-R+6}" y="${y(s[s.length-1])+4}" font-size="11" fill="var(--ink)"><tspan fill="${col}">●</tspan> ${txt}</text>`;
+    if(r.a) g+=`<path d="${path(r.a)}" fill="none" stroke="var(--normal)" stroke-width="2" stroke-linejoin="round"/>`;
+    if(r.b) g+=`<path d="${path(r.b)}" fill="none" stroke="var(--event)" stroke-width="2" stroke-linejoin="round"/>`;
+    // ป้ายท้ายเส้น: ถ้าใกล้กันเกินไปให้ดันออกจากกัน
+    let ya=r.a?y(r.a[N-1]):null, yb=r.b?y(r.b[N-1]):null;
+    if(ya!=null&&yb!=null&&Math.abs(ya-yb)<14){const m2=(ya+yb)/2, up=ya<=yb; ya=m2+(up?-7:7); yb=m2+(up?7:-7);
+      if(Math.max(ya,yb)>H-B){const d=Math.max(ya,yb)-(H-B); ya-=d; yb-=d;}}
+    const lab2=(yy,txt,col)=>`<text x="${W-R+6}" y="${yy+4}" font-size="11" fill="var(--ink)"><tspan fill="${col}">●</tspan> ${txt}</text>`;
+    if(r.a) g+=lab2(ya,'ปกติ','var(--normal)');
+    if(r.b) g+=lab2(yb,'พิเศษ','var(--event)');
+    g+=`<line class="xh" x1="0" x2="0" y1="${T}" y2="${H-B}" stroke="var(--axis)" stroke-dasharray="3 3" visibility="hidden"/>`;
+    g+=`<rect class="ov" x="${L}" y="${T}" width="${W-L-R}" height="${H-T-B}" fill="transparent"/>`;
+    box.innerHTML=`<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${tk} เทียบวันพิเศษกับวันปกติ">${g}</svg>`;
+    const svg=box.querySelector('svg'), xh=svg.querySelector('.xh'), ov=svg.querySelector('.ov');
+    ov.addEventListener('mousemove',e=>{const pt=svg.getBoundingClientRect(), sx=(e.clientX-pt.left)*W/pt.width;
+      const i=Math.max(0,Math.min(N-1,Math.round((sx-L)/dx))); xh.setAttribute('x1',x(i)); xh.setAttribute('x2',x(i)); xh.setAttribute('visibility','visible');
+      const f=v=>v==null?'–':(m==='net'&&v>=0?'+':'')+v.toFixed(2)+unit;
+      tip.innerHTML=`<b>${tk}</b> ${D.labels[i]} น. (ไทย) · ${D.et[i]} ET<br>`+
+        `<span class="ln" style="background:var(--normal)"></span>วันปกติ ${f(r.a&&r.a[i])}<br>`+
+        `<span class="ln" style="background:var(--event)"></span>${cmp.options[cmp.selectedIndex].text} ${f(r.b&&r.b[i])}`;
+      tip.style.display='block'; tip.style.left=Math.min(e.clientX+12,innerWidth-260)+'px'; tip.style.top=(e.clientY+12)+'px';});
+    ov.addEventListener('mouseleave',()=>{tip.style.display='none'; xh.setAttribute('visibility','hidden');});
+  }
+}
+cmp.addEventListener('change',draw); met.addEventListener('change',draw); draw();
+})();
+"""
+
+
+def compare_html(data: dict, groups: dict) -> str:
+    if not data:
+        return ""
+    all_days = sorted({d for t in data.values() for d in t["days"]}, reverse=True)
+    cnt = {k: sum(1 for d in all_days if any(k in groups.get(tk, {}).get(d, []) for tk in data)) for k in GROUPS}
+    special = [d for d in all_days if any(groups.get(tk, {}).get(d, ["NORMAL"]) != ["NORMAL"] for tk in data)]
+    opts = "".join(f"<option value='G:{k}'>{v} — {cnt[k]} วัน</option>" for k, v in GROUPS.items() if cnt[k])
+    opts += "<optgroup label='เลือกเป็นรายวัน'>" + "".join(
+        f"<option value='{d}'>{d}{' ★' if d in special else ''}</option>" for d in all_days) + "</optgroup>"
+    charts = "".join(f"<div class='ch'><h3>{tk} <span class='mute' id='vc-n-{tk}'></span></h3><div id='vc-{tk}'></div></div>"
+                     for tk in data)
+    return (
+        f"<style>{CMP_CSS}</style>"
+        "<h2>วันพิเศษ vs วันปกติ: ซื้อขายต่างกันช่วงไหน</h2><div class='card vc'>"
+        "<div class='ctl'><label>เทียบ: <select id='vc-cmp'>" + opts + "</select></label>"
+        "<label>วัดเป็น: <select id='vc-met'><option value='share'>% ของ volume ทั้งวัน</option>"
+        "<option value='rel'>volume เทียบวันปกติ (% ของ volume ทั้งวันปกติ)</option>"
+        "<option value='net'>ซื้อสุทธิ (ซื้อ − ขาย, % ของวัน)</option></select></label>"
+        "<span><i class='ln' style='background:var(--normal)'></i>วันปกติ (เฉลี่ย)</span>"
+        "<span><i class='ln' style='background:var(--event)'></i>วันพิเศษที่เลือก</span></div>"
+        + charts +
+        "<div class='mute'>วันปกติ = ไม่มี CPI/FOMC/งบ, SPY ขยับไม่ถึง ±1.5% และหุ้นขยับไม่ถึง ±5% · ★ = วันพิเศษ · "
+        "เส้นเฉลี่ยเคลื่อนที่ 15 นาทีให้อ่านง่าย · "
+        "<b>volume เทียบวันปกติ</b> ช่วยดูว่าวันพิเศษคึกคักกว่าปกติกี่เท่า (เส้นปกติรวมทั้งวัน = 100%) · "
+        "ข้อมูลแท่ง 1 นาทีมี 20 วันล่าสุด จะเทียบรายเดือนได้เมื่อเก็บครบหลายเดือน</div></div>"
+        f"<script>{CMP_JS}</script>")
+
+
 def section_html(tickers: list[str]) -> str:
     data = build_data(tickers)
     if not data:
@@ -160,7 +297,8 @@ def section_html(tickers: list[str]) -> str:
     slots, labels = _slots(), _thai_labels()
     all_days = sorted({d for t in data.values() for d in t["days"]}, reverse=True)
     n = max(t["n"] for t in data.values())
-    payload = {"t": data, "labels": labels, "et": [s.strftime("%H:%M") for s in slots],
+    groups = day_groups(list(data))
+    payload = {"t": data, "g": groups, "labels": labels, "et": [s.strftime("%H:%M") for s in slots],
                "open_i": slots.index(time(9, 30)), "close_i": slots.index(time(16, 0))}
     opts = f"<option value='avg'>เฉลี่ย {n} วันล่าสุด</option>" + "".join(
         f"<option value='{d}'>{d}</option>" for d in all_days)
@@ -191,4 +329,4 @@ def section_html(tickers: list[str]) -> str:
         f"<tr><th class='l'>หุ้น</th>{head}</tr>{rows}</table></div></details>"
         "<div class='tip' id='vp-tip'></div></div>"
         f"<script type='application/json' id='vp-data'>{json.dumps(payload, separators=(',', ':'))}</script>"
-        f"<script>{JS}</script>")
+        f"<script>{JS}</script>" + compare_html(data, groups))
